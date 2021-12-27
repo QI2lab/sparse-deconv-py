@@ -5,11 +5,11 @@ import time
 
 from matplotlib import pyplot as plt
 
-from sparse_recon.sparse_hessian_recon.sparse_hessian_recon import sparse_hessian
-from sparse_recon.iterative_deconv.iterative_deconv import iterative_deconv
-from sparse_recon.iterative_deconv.kernel import Gauss
-from utils.background_estimation import background_estimation
-from utils.upsample import spatial_upsample, fourier_upsample
+from .sparse_hessian_recon.sparse_hessian_recon import sparse_hessian
+from .iterative_deconv.iterative_deconv import iterative_deconv, alt_LR_decon
+from .iterative_deconv.kernel import Gauss
+from .utils.background_estimation import new_background_estimation
+from .utils.upsample import spatial_upsample, fourier_upsample
 try:
     import cupy as cp
 except ImportError:
@@ -17,8 +17,8 @@ except ImportError:
 xp = np if cp is None else cp
 if xp is not cp:
     warnings.warn("could not import cupy... falling back to numpy & cpu.")
-def sparse_deconv(im, sigma, sparse_iter = 100, fidelity = 150, sparsity = 10, tcontinuity = 0.5,
-                          background = 1, deconv_iter = 7, deconv_type = 1,
+def sparse_deconv(img, sigma, sparse_iter = 100, fidelity = 150, sparsity = 10, tcontinuity = 0.5,
+                          prior = 1, deconv_iter = 7, deconv_type = 1,
                           up_sample = 0,):
 
     """Sparse deconvolution.
@@ -34,7 +34,7 @@ def sparse_deconv(im, sigma, sparse_iter = 100, fidelity = 150, sparsity = 10, t
    	----------
     Parameters
     ----------
-    im : ndarray
+    img : ndarray
        Input image (can be N dimensional).
     sigma : 1/2/3 element(s) list
        The point spread function size in pixel.
@@ -71,8 +71,8 @@ def sparse_deconv(im, sigma, sparse_iter = 100, fidelity = 150, sparsity = 10, t
     --------
     >>> from sparse_recon.sparse_deconv import sparse_deconv
 	>>> from skimage import io
-    >>> im = io.imread('test.tif')
-	>>> img_recon = sparse_deconv(im, [5,5])
+    >>> img = io.imread('test.tif')
+	>>> img_recon = sparse_deconv(img, [5,5])
     References
     ----------
       [1] Weisong Zhao et al. Sparse deconvolution improves
@@ -83,55 +83,52 @@ def sparse_deconv(im, sigma, sparse_iter = 100, fidelity = 150, sparsity = 10, t
     if not sigma:
         print("The PSF's sigma is not given, turning off the iterative deconv...")
         deconv_type = 0
-    im = np.array(im, dtype = 'float32')
-    im = im / (im.max())
-    index = im.max()
-    if background == 2:
-        backgrounds = background_estimation(im / 2)
-        im=im- backgrounds
-    elif background == 1:
-        backgrounds = background_estimation(im / 2.5)
-        im=im- backgrounds
-    elif background== 4:
-        medVal = np.mean(im)
-        im[im> medVal] = medVal
-        backgrounds = background_estimation(im)
-        im = im - backgrounds
-    elif background == 5:
-        medVal = np.mean(im)/2
-        im[im > medVal] = medVal
-        backgrounds = background_estimation(im)
-        im = im - backgrounds
-    elif background == 3:
-        medVal = np.mean(im) / 2.5
-        im[im > medVal] = medVal
-        backgrounds = background_estimation(im)
-        im = im - backgrounds
-
-    im = im / (im.max())
-    # plt.imshow(im*255,cmap ='gray')
-    # plt.show()
-    im[im < 0] = 0
+    img = img.astype(np.float32)
+    scaler = np.max(img)
+    img = img / scaler
+    # remove background
+    background, noise = new_background_estimation(img,prior=0,resolution_px=sigma, noise_lvl = 1)
+    img = img - background
+    img = img - noise
+    img[img < 0] = 0.0
+    img = img / (img.max())
+    # up-sampling
+    if up_sample == 1:
+        img = fourier_upsample(img)
+    elif up_sample == 2:
+        img = spatial_upsample(img)
+    img = img / (img.max())
 
     if up_sample == 1:
-        im = fourier_upsample(im)
+        img = fourier_upsample(img)
     elif up_sample == 2:
-        im = spatial_upsample(im)
-    im = im / (im.max())
-    start = time.clock()
-    img_sparse = sparse_hessian(im, sparse_iter, fidelity, sparsity, tcontinuity)
-    end = time.clock()
+        img = spatial_upsample(img)
+    img = img / (img.max())
+    start = time.process_time()
+    img_sparse = sparse_hessian(img, sparse_iter, fidelity, sparsity, tcontinuity)
+    end = time.process_time()
     print('sparse hessian time')
     print(end - start)
     img_sparse = img_sparse / (img_sparse.max())
+
     if deconv_type == 0:
         img_last = img_sparse
-        return index * img_last
-    else:
-        start = time.clock()
-        kernel = Gauss(sigma)
-        img_last = iterative_deconv(img_sparse, kernel, deconv_iter, rule = deconv_type)
-        end = time.clock()
+        return scaler * img_last
+    elif deconv_type == 3:
+        start = time.process_time()
+        sigma_3D = [.8/.230,sigma[0],sigma[1]]
+        kernel_3D = Gauss(sigma_3D)
+        img_decon = alt_LR_decon(img_sparse,kernel_3D,deconv_iter)
+        end = time.process_time()
         print('deconv time')
         print(end - start)
-        return index * img_last
+        return scaler * img_decon
+    else:
+        start = time.process_time()
+        sigma_3D = [.8/.230,sigma[0],sigma[1]]
+        kernel = Gauss(sigma)
+        img_last = iterative_deconv(img_sparse, kernel, deconv_iter, rule = deconv_type)
+        end = time.process_time()
+        print('deconv time')
+        print(end - start)
+        return scaler * img_last

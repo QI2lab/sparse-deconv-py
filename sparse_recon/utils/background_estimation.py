@@ -1,79 +1,95 @@
-import pywt
+from pywt import wavedecn, waverecn
+from scipy.ndimage import gaussian_filter  
+from joblib import Parallel, delayed 
+import multiprocessing
 import numpy as np
-from numpy import zeros
 
+# new wavelet decomposition from https://github.com/NienhausLabKIT/HuepfelM/tree/master/WBNS/python_script
+#https://www.osapublishing.org/boe/fulltext.cfm?uri=boe-12-2-969&id=446834
 
-def background_estimation(imgs, th = 1, dlevel = 6, wavename = 'db6', iter = 3):
-    ''' Background estimation
-        function Background = background_estimation(imgs,th,dlevel,wavename,iter)
-        ims: ndarray
-            Input image (can be N dimensional).
-        th : int, optional
-            if iteration {default:1}
-        dlevel : int, optional
-         decomposition level {default:7}
-        wavename
-         The selected wavelet function {default:'db6'}
-        iter:  int, optional
-         iteration {default:3}
-        -----------------------------------------------
-        Output:
-         Background
-    '''
-    if imgs.ndim < 3:
-        [x, y] = imgs.shape
-        z = 1
-        if x < y:
-            imgs = np.lib.pad(imgs, [max(x, y) - imgs.shape[0], max(x, y) - imgs.shape[1], 0], 'symmetric')
-        Background = np.zeros((imgs.shape[0], imgs.shape[1]), dtype = 'float32')
+def wavelet_based_BG_subtraction(img,num_levels,noise_lvl):
+
+  coeffs = wavedecn(img, 'db1', level=None) #decomposition
+  coeffs2 = coeffs.copy()
+  
+  for BGlvl in range(1, num_levels):
+      coeffs[-BGlvl] = {k: np.zeros_like(v) for k, v in coeffs[-BGlvl].items()} #set lvl 1 details  to zero
+  
+  Background = waverecn(coeffs, 'db1') #reconstruction
+  del coeffs
+  BG_unfiltered = Background
+  Background = gaussian_filter(Background, sigma=2**num_levels) #gaussian filter sigma = 2^#lvls 
+  
+  coeffs2[0] = np.ones_like(coeffs2[0]) #set approx to one (constant)
+  for lvl in range(1, np.size(coeffs2)-noise_lvl):
+      coeffs2[lvl] = {k: np.zeros_like(v) for k, v in coeffs2[lvl].items()} #keep first detail lvl only
+  Noise = waverecn(coeffs2, 'db1') #reconstruction
+  del coeffs2
+  
+  return Background, Noise, BG_unfiltered
+
+def new_background_estimation(img,prior=0,resolution_px=[5,5], noise_lvl = 1):
+
+    if prior == 0:
+        img = img
+    elif prior == 1:
+        img = img / 2.5
+    elif prior == 2:
+        img = img / 2.0
+    elif prior == 3:
+        mean = np.mean(img) / 2.5
+        img[img > mean] = mean
+    elif prior == 4:
+        mean= np.mean(img)
+        img[img > mean] = mean
+    elif prior == 5:
+        mean = np.mean(img) / 2
+        img[img > mean] = mean
+
+    #number of levels for background estimate
+    num_levels = np.uint16(np.ceil(np.log2(resolution_px[0])))
+
+    #image = np.array(io.imread(os.path.join(data_dir, file)),dtype = 'float32')
+    if np.ndim(img) == 2:
+        shape = np.shape(img)
+        img = np.reshape(img, [1, shape[0], shape[1]])
+    shape = np.shape(img)
+    if shape[1] % 2 != 0:
+        img = np.pad(img,((0,0), (0,1), (0, 0)), 'edge')
+        pad_1 = True
     else:
-        [z, x,y] = imgs.shape
-        if x < y:
-            imgs = np.lib.pad(imgs, [max(x, y) - imgs.shape[0], max(x, y) - imgs.shape[1],0], 'symmetric')
-        Background = np.zeros((imgs.shape[0],imgs.shape[1],imgs.shape[2]), dtype = 'float32')
-    for frames in range(0,z):
-        if imgs.ndim < 3:
-            initial = imgs
-        else:
-            initial = imgs[frames,:,:]
-        res = initial
-        for ii in range(0,iter):
+        pad_1 = False
+    if shape[2] % 2 != 0:
+        img = np.pad(img,((0,0), (0,0), (0, 1)), 'edge')
+        pad_2 = True
+    else:
+        pad_2 = False
 
-            m =pywt.wavedec2(res, wavename,'symmetric', dlevel)
-            k = pywt.wavedec2(res, wavename, 'symmetric', dlevel)
-            #print(k[1][2].shape)
-            list_out = []
-            for i in k:
-                lt = list(i)
-                list_out.append(lt)
+    #extract background and noise
+    num_cores = multiprocessing.cpu_count() #number of cores on your CPU
+    res = Parallel(n_jobs=num_cores,max_nbytes=None)(delayed(wavelet_based_BG_subtraction)(img[slice],num_levels, noise_lvl) for slice in range(np.size(img,0)))
+    background, noise, bg_unfiltered = zip(*res)
 
-            n = np.zeros((dlevel + 2, 2))
-            for g in range(0,dlevel + 1):
-                n[g,:] = np.array(m[g][1].shape)
-            n[dlevel + 1,:] = np.array(initial.shape)
-            for kk in range(1,dlevel+1):
-                list_out[kk][0] = zeros((int(n[kk,1]), int(n[kk,1])), dtype = 'float32')
-                list_out[kk][1] = zeros((int(n[kk,1]), int(n[kk,1])), dtype = 'float32')
-                list_out[kk][2] = zeros((int(n[kk,1]), int(n[kk,1])), dtype = 'float32')
-            Biter = pywt.waverec2(list_out, wavename)
+    #convert to float64 numpy array
+    noise = np.asarray(noise,dtype = 'float32')
+    background = np.asarray(background,dtype = 'float32')
+    bg_unfiltered = np.asarray(bg_unfiltered,dtype = 'float32')
 
-            if th > 0:
-                eps = np.sqrt(np.abs(res))/2
-                ind = initial > (Biter + eps)
-                res[ind] = Biter[ind] + eps[ind]
-                k = pywt.wavedec2(res, wavename,'symmetric',dlevel)
-                list_out = []
-                for i in k:
-                    lt = list(i)
-                    list_out.append(lt)
-                for kk in range(1, dlevel + 1):
-                    list_out[kk][0] = zeros((int(n[kk, 1]),int(n[kk, 1])), dtype = 'float32')
-                    list_out[kk][1] = zeros((int(n[kk, 1]),int(n[kk, 1])), dtype = 'float32')
-                    list_out[kk][2] = zeros((int(n[kk, 1]), int(n[kk, 1])), dtype = 'float32')
-                Biter = pywt.waverec2(list_out, wavename)
+    #undo padding
+    if pad_1:
+        img = img[:,:-1,:]
+        noise = noise[:,:-1,:]
+        background = background[:,:-1,:]
+        bg_unfiltered = bg_unfiltered[:,:-1,:]
+    if pad_2:
+        img = img[:,:,:-1]
+        noise = noise[:,:,:-1]
+        background = background[:,:,:-1]
+        bg_unfiltered = bg_unfiltered[:,:,:-1]
 
-        if imgs.ndim < 3:
-            Background = Biter
-        else:
-            Background[frames,:,:] = Biter
-    return  Background
+    #correct noise
+    noise[noise<0] = 0 #positivity constraint
+    noise_threshold = np.mean(noise)+2*np.std(noise)
+    noise[noise>noise_threshold] = noise_threshold #2 sigma threshold reduces artifacts
+
+    return background, noise

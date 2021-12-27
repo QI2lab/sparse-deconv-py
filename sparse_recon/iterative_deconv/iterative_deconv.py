@@ -2,6 +2,7 @@ import math
 import warnings
 import numpy as np
 from numpy import zeros
+from cucim.skimage.restoration import richardson_lucy as lr_cucim
 
 try:
     import cupy as cp
@@ -12,6 +13,12 @@ xp = np if cp is None else cp
 
 if xp is not cp:
     warnings.warn("could not import cupy... falling back to numpy & cpu.")
+
+def alt_LR_decon(img,psf,iteration):
+    img_float16 = img.astype(np.float16)
+    psf_float16 = psf.astype(np.float16)
+    img_decon = lr_cucim(cp.asarray(img_float16), cp.asarray(psf_float16), iterations=iteration, clip=True, filter_epsilon=1e-6)
+    return cp.asnumpy(img_decon)
 
 def iterative_deconv(data,kernel,iteration,rule):
     if xp is not np:
@@ -91,11 +98,11 @@ def deblur_core(data, kernel, iteration, rule):
 
                 alpha = sum(sum(vk_update * vk))/(sum(sum(vk_update * vk_update)) + math.e)
                 alpha = xp.maximum(xp.minimum(alpha, 1), 1e-6, dtype = 'float32')
-               # start = time.clock()
+               # start = time.process_time()
                 yk = xk + alpha * (xk - xk_update)
                 yk = xp.maximum(yk, 1e-6, dtype = 'float32')
                 yk[xp.isnan(yk)] = 1e-6
-                #end = time.clock()
+                #end = time.process_time()
                # print(start, end)
                 #K=np.isnan(yk)
 
