@@ -1,5 +1,6 @@
 import  warnings
 import numpy as np
+from cucim.skimage.transform import rescale
 
 try:
     import cupy as cp
@@ -9,27 +10,15 @@ xp =np if cp is None else cp
 if xp is not cp:
     warnings.warn("could not import cupy... falling back to numpy & cpu.")
 
-def spatial_upsample(SIMmovie,n=2):
+def spatial_upsample(data,n=2):
     if xp is not cp:
-        SIMmovie = SIMmovie
+        data = data
     else:
-        SIMmovie = cp.asarray(SIMmovie)
+        data = cp.asarray(data)
 
-    k = SIMmovie.ndim
-    if k > 2:
-        [sz,sx,sy] = SIMmovie.shape
+    rescaled_data = rescale(data,n,preserve_range=True)
 
-
-        y = xp.zeros((sz*n, sx*n,sy*n), dtype = 'float32')
-        y = xp.array(y)
-        y[0:sz*n:n, 0:sx*n:n, 0:sy*n:n] = SIMmovie
-        y = xp.array(y)
-        return y
-    else:
-        [sx, sy] = SIMmovie.shape
-        y=xp.zeros((sx*n, sy*n), dtype = 'float32')
-        y[0:sx * n:n, 0:sy * n:n] = SIMmovie
-        return y
+    return cp.asnumpy(rescaled_data)
 
 
 def fourier_upsample(imgstack, n = 2):
@@ -53,7 +42,8 @@ def fourier_upsample(imgstack, n = 2):
     if imgstack.ndim < 3:
         z = 1
     else:
-        z = imgstack[0]
+        z = imgstack.shape[0]
+        z = xp.asnumpy(z)
     for i in range(0,z):
         if imgstack.ndim < 3:
             img = imgstack

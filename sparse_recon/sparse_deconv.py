@@ -2,6 +2,7 @@ import cupy as cp
 import numpy as np
 import warnings
 import time
+import gc
 
 from matplotlib import pyplot as plt
 
@@ -60,7 +61,8 @@ def sparse_deconv(img, sigma, sparse_iter = 100, fidelity = 150, sparsity = 10, 
        choose the different type deconvolution:
        0: No deconvolution
        1: LandWeber deconxolution
-       2: Richardson-Lucy deconvolution
+       2: Accelerated Richardson-Lucy deconvolution
+       3: Non-accelerated Richardson-Lucy deconvolution
 
     Returns
     -------
@@ -87,9 +89,10 @@ def sparse_deconv(img, sigma, sparse_iter = 100, fidelity = 150, sparsity = 10, 
     scaler = np.max(img)
     img = img / scaler
     # remove background
-    background, noise = new_background_estimation(img,prior=0,resolution_px=sigma, noise_lvl = 1)
-    img = img - background
-    img = img - noise
+    if not(prior == -1):
+        background, noise = new_background_estimation(img,prior=0,resolution_px=sigma, noise_lvl = 1)
+        img = img - background
+        img = img - noise
     img[img < 0] = 0.0
     img = img / (img.max())
     # up-sampling
@@ -99,16 +102,14 @@ def sparse_deconv(img, sigma, sparse_iter = 100, fidelity = 150, sparsity = 10, 
         img = spatial_upsample(img)
     img = img / (img.max())
 
-    if up_sample == 1:
-        img = fourier_upsample(img)
-    elif up_sample == 2:
-        img = spatial_upsample(img)
-    img = img / (img.max())
     start = time.process_time()
+
+    gc.collect()
+    xp.clear_memo()
+
     img_sparse = sparse_hessian(img, sparse_iter, fidelity, sparsity, tcontinuity)
     end = time.process_time()
-    print('sparse hessian time')
-    print(end - start)
+    print('sparse hessian time %0.2fs' % (end - start))
     img_sparse = img_sparse / (img_sparse.max())
 
     if deconv_type == 0:
@@ -116,12 +117,21 @@ def sparse_deconv(img, sigma, sparse_iter = 100, fidelity = 150, sparsity = 10, 
         return scaler * img_last
     elif deconv_type == 3:
         start = time.process_time()
-        sigma_3D = [.8/.230,sigma[0],sigma[1]]
+        sigma_3D = [.9/.115,sigma[0],sigma[1]]
         kernel_3D = Gauss(sigma_3D)
         img_decon = alt_LR_decon(img_sparse,kernel_3D,deconv_iter)
         end = time.process_time()
-        print('deconv time')
-        print(end - start)
+        print('deconv time %0.2fs' % (end - start))
+        return scaler * img_decon
+    elif deconv_type == 4:
+        start = time.process_time()
+        img_decon = np.zeros(img_sparse.shape)
+        sigma_2D = [sigma[0],sigma[1]]
+        kernel_2D = Gauss(sigma_2D)
+        for z_idx in range(0,img_sparse.shape[0]):
+            img_decon[z_idx,:] = alt_LR_decon(img_sparse,kernel_2D,deconv_iter)
+        end = time.process_time()
+        print('deconv time %0.2fs' % (end - start))
         return scaler * img_decon
     else:
         start = time.process_time()
@@ -129,6 +139,5 @@ def sparse_deconv(img, sigma, sparse_iter = 100, fidelity = 150, sparsity = 10, 
         kernel = Gauss(sigma)
         img_last = iterative_deconv(img_sparse, kernel, deconv_iter, rule = deconv_type)
         end = time.process_time()
-        print('deconv time')
-        print(end - start)
+        print('deconv time %0.2fs' % (end - start))
         return scaler * img_last
