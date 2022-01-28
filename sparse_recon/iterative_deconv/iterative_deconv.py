@@ -3,6 +3,8 @@ import warnings
 import numpy as np
 from numpy import zeros
 from cucim.skimage.restoration import richardson_lucy as lr_cucim
+import gc
+import dask.array as da
 
 try:
     import cupy as cp
@@ -14,11 +16,46 @@ xp = np if cp is None else cp
 if xp is not cp:
     warnings.warn("could not import cupy... falling back to numpy & cpu.")
 
+
+def alt_LR_decon_dask(img,psf,iteration):
+
+    # define chunk size for GPU processing
+    chunk_size = (128,351,900)
+
+    # calculate amount to pad array to be even multiple of chunk size
+    arr_size_mismatch = np.divide(img.shape,chunk_size)
+    factor_z = np.round((chunk_size[0]*np.ceil(arr_size_mismatch[0])) - img.shape[0],0).astype(int)
+    factor_y = np.round((chunk_size[1]*np.ceil(arr_size_mismatch[1])) - img.shape[1],0).astype(int)
+    factor_x = np.round((chunk_size[2]*np.ceil(arr_size_mismatch[2])) - img.shape[2],0).astype(int)
+
+    # pad array
+    img_padded = np.pad(img,((0,factor_z),(0,factor_y),(0,factor_x)),mode='constant',constant_values=np.median(img))
+    del img
+    gc.collect()
+
+    # create dask array
+    arr = da.from_array(img_padded, chunks=chunk_size)
+
+    def sparse_alt_LR_chunk(chunk):
+        chunked_result = alt_LR_decon(chunk,psf,iteration)
+        return chunked_result
+
+    # run overlapped sparse hessian calculation
+    result_overlap = arr.map_overlap(sparse_alt_LR_chunk,depth=(0,0,psf.shape[2]), boundary='reflect', dtype='float32').compute(num_workers=1)
+
+    return xp.asnumpy(result_overlap)
+
 def alt_LR_decon(img,psf,iteration):
-    img_float16 = img.astype(np.float16)
-    psf_float16 = psf.astype(np.float16)
-    img_decon = lr_cucim(cp.asarray(img_float16), cp.asarray(psf_float16), iterations=iteration, clip=True, filter_epsilon=1e-6)
-    return cp.asnumpy(img_decon)
+    img_float16 = xp.asarray(img.astype(np.float16))
+    psf_float16 = xp.asarray(psf.astype(np.float16))
+    img_decon = lr_cucim(img_float16, psf_float16, iterations=iteration, clip=True, filter_epsilon=1e-6)
+    img_decon_np = xp.asnumpy(img_decon)
+    
+    del img_float16, psf_float16, img_decon
+    gc.collect()
+    xp.clear_memo()
+
+    return img_decon_np
 
 def iterative_deconv(data,kernel,iteration,rule):
     if xp is not np:

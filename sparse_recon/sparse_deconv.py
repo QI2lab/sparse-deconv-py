@@ -6,8 +6,8 @@ import gc
 
 from matplotlib import pyplot as plt
 
-from .sparse_hessian_recon.sparse_hessian_recon import sparse_hessian
-from .iterative_deconv.iterative_deconv import iterative_deconv, alt_LR_decon
+from .sparse_hessian_recon.sparse_hessian_recon import sparse_hessian, sparse_hessian_dask
+from .iterative_deconv.iterative_deconv import iterative_deconv, alt_LR_decon, alt_LR_decon_dask
 from .iterative_deconv.kernel import Gauss
 from .utils.background_estimation import new_background_estimation
 from .utils.upsample import spatial_upsample, fourier_upsample
@@ -86,28 +86,27 @@ def sparse_deconv(img, sigma, sparse_iter = 100, fidelity = 150, sparsity = 10, 
         print("The PSF's sigma is not given, turning off the iterative deconv...")
         deconv_type = 0
     img = img.astype(np.float32)
-    scaler = np.max(img)
-    img = img / scaler
     # remove background
     if not(prior == -1):
         background, noise = new_background_estimation(img,prior=0,resolution_px=sigma, noise_lvl = 1)
         img = img - background
         img = img - noise
     img[img < 0] = 0.0
-    img = img / (img.max())
     # up-sampling
     if up_sample == 1:
         img = fourier_upsample(img)
     elif up_sample == 2:
         img = spatial_upsample(img)
-    img = img / (img.max())
+    scaler = np.max(img)
+    img = img / scaler
 
     start = time.process_time()
 
     gc.collect()
     xp.clear_memo()
 
-    img_sparse = sparse_hessian(img, sparse_iter, fidelity, sparsity, tcontinuity)
+    img_sparse = sparse_hessian_dask(img, sparse_iter, fidelity, sparsity, tcontinuity)
+    #img_sparse = sparse_hessian(img, sparse_iter, fidelity, sparsity, tcontinuity)
     end = time.process_time()
     print('sparse hessian time %0.2fs' % (end - start))
     img_sparse = img_sparse / (img_sparse.max())
@@ -119,7 +118,7 @@ def sparse_deconv(img, sigma, sparse_iter = 100, fidelity = 150, sparsity = 10, 
         start = time.process_time()
         sigma_3D = [.9/.115,sigma[0],sigma[1]]
         kernel_3D = Gauss(sigma_3D)
-        img_decon = alt_LR_decon(img_sparse,kernel_3D,deconv_iter)
+        img_decon = alt_LR_decon_dask(img_sparse,kernel_3D,deconv_iter)
         end = time.process_time()
         print('deconv time %0.2fs' % (end - start))
         return scaler * img_decon

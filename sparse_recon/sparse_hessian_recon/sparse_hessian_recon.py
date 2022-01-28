@@ -2,6 +2,8 @@
 import gc
 from .operation import *
 from .sparse_iteration import *
+import dask.array as da
+
 import numpy as np
 try:
     import cupy as cp
@@ -10,6 +12,34 @@ except ImportError:
 xp = np if cp is None else cp
 if xp is not cp:
     warnings.warn("could not import cupy... falling back to numpy & cpu.")
+
+def sparse_hessian_dask(f, iteration_num = 100, fidelity = 150, sparsity = 10, contiz = 0.5 , mu = 1):
+
+    # define chunk size for GPU processing
+    chunk_size = (128,351,600)
+
+    # calculate amount to pad array to be even multiple of chunk size
+    arr_size_mismatch = np.divide(f.shape,chunk_size)
+    factor_z = np.round((chunk_size[0]*np.ceil(arr_size_mismatch[0])) - f.shape[0],0).astype(int)
+    factor_y = np.round((chunk_size[1]*np.ceil(arr_size_mismatch[1])) - f.shape[1],0).astype(int)
+    factor_x = np.round((chunk_size[2]*np.ceil(arr_size_mismatch[2])) - f.shape[2],0).astype(int)
+
+    # pad array
+    f_padded = np.pad(f,((0,factor_z),(0,factor_y),(0,factor_x)),mode='constant',constant_values=np.median(f))
+    del f
+    gc.collect()
+
+    # create dask array
+    arr = da.from_array(f_padded, chunks=chunk_size)
+
+    def sparse_hessian_chunk(chunk):
+        chunked_result = sparse_hessian(chunk,iteration_num, fidelity, sparsity, contiz, mu)
+        return chunked_result
+
+    # run overlapped sparse hessian calculation
+    result_overlap = arr.map_overlap(sparse_hessian_chunk,depth=(0,0,12), boundary='reflect', dtype='float32').compute(num_workers=1)
+
+    return xp.asnumpy(result_overlap)
 
 def sparse_hessian(f, iteration_num = 100, fidelity = 150, sparsity = 10, contiz = 0.5 , mu = 1):
     '''
