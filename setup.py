@@ -14,6 +14,6 @@ setup(
     version='0.0.0',
     description="",
     author="",
-    packages=find_packages(include=["sparse_recon"]),
+    packages=find_packages(include=["sparse_recon", "sparse_recon.*"]),
     python_requires='>=3.7',
     install_requires=required_pkgs)
